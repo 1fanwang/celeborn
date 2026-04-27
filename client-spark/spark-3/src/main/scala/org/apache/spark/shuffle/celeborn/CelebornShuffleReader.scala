@@ -378,11 +378,7 @@ class CelebornShuffleReader[K, C](
         var sleepCnt = 0L
         while (inputStream == null) {
           if (exceptionRef.get() != null) {
-            exceptionRef.get() match {
-              case ce @ (_: CelebornIOException | _: PartitionUnRetryAbleException) =>
-                handleFetchExceptions(handle.shuffleId, shuffleId, partitionId, ce)
-              case e => throw e
-            }
+            handleReadException(handle.shuffleId, shuffleId, partitionId, exceptionRef.get())
           }
           if (sleepCnt == 0) {
             logInfo(s"inputStream for partition: $partitionId is null, sleeping 5ms")
@@ -539,6 +535,22 @@ class CelebornShuffleReader[K, C](
         ce)
     } else
       throw ce
+  }
+
+  // Convert any IOException raised while reading a partition into a FetchFailedException so Spark
+  // can rerun the upstream stage. Without this, transport-level failures (e.g. plain IOException
+  // from TransportClientFactory.retryCreateClient after a worker crash) bypass the
+  // FetchFailedException path and fail the whole application.
+  @VisibleForTesting
+  def handleReadException(
+      appShuffleId: Int,
+      shuffleId: Int,
+      partitionId: Int,
+      e: Throwable): Unit = e match {
+    case ce: IOException =>
+      handleFetchExceptions(appShuffleId, shuffleId, partitionId, ce)
+    case other =>
+      throw other
   }
 
   def newSerializerInstance(dep: ShuffleDependency[K, _, C]): SerializerInstance = {

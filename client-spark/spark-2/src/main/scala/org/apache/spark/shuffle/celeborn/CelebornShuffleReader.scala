@@ -144,24 +144,7 @@ class CelebornShuffleReader[K, C](
         var inputStream: CelebornInputStream = streams.get(partitionId)
         while (inputStream == null) {
           if (exceptionRef.get() != null) {
-            exceptionRef.get() match {
-              case ce @ (_: CelebornIOException | _: PartitionUnRetryAbleException) =>
-                if (handle.stageRerunEnabled &&
-                  shuffleClient.reportShuffleFetchFailure(
-                    handle.shuffleId,
-                    shuffleId,
-                    context.taskAttemptId())) {
-                  throw new FetchFailedException(
-                    null,
-                    handle.shuffleId,
-                    -1,
-                    partitionId,
-                    SparkUtils.FETCH_FAILURE_ERROR_MSG + shuffleId,
-                    ce)
-                } else
-                  throw ce
-              case e => throw e
-            }
+            handleReadException(shuffleId, partitionId, exceptionRef.get())
           }
           Thread.sleep(50)
           inputStream = streams.get(partitionId)
@@ -271,6 +254,31 @@ class CelebornShuffleReader[K, C](
         // or(and) sorter may have consumed previous interruptible iterator.
         new InterruptibleIterator[Product2[K, C]](context, resultIter)
     }
+  }
+
+  // Convert any IOException raised while reading a partition into a FetchFailedException so Spark
+  // can rerun the upstream stage. Without this, transport-level failures (e.g. plain IOException
+  // from TransportClientFactory.retryCreateClient after a worker crash) bypass the
+  // FetchFailedException path and fail the whole application.
+  private def handleReadException(shuffleId: Int, partitionId: Int, e: Throwable): Unit = e match {
+    case ce: IOException =>
+      if (handle.stageRerunEnabled &&
+        shuffleClient.reportShuffleFetchFailure(
+          handle.shuffleId,
+          shuffleId,
+          context.taskAttemptId())) {
+        throw new FetchFailedException(
+          null,
+          handle.shuffleId,
+          -1,
+          partitionId,
+          SparkUtils.FETCH_FAILURE_ERROR_MSG + shuffleId,
+          ce)
+      } else {
+        throw ce
+      }
+    case other =>
+      throw other
   }
 }
 
